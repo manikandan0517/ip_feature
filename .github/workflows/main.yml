@@ -24,7 +24,6 @@ jobs:
 
           echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
           echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
-
   deploy_lambda:
     needs: check_changes
     if: needs.check_changes.outputs.lambda_changed == 'true'
