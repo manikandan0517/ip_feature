@@ -89,7 +89,7 @@ def generate_deficiency_report(request, id):
     try:
         pdf = PDF.objects.get(id=id)
         if pdf.deficiency_report:
-            logger.info(f"Report already exists for PDF ID: {id}")
+            logger.info(f"Report already exists for PDF file with ID: {id}")
             return Response(PdfSerializer(pdf).data, status=status.HTTP_208_ALREADY_REPORTED)
 
         update_pdf_status(pdf, PDFStatus.PROCESSING)

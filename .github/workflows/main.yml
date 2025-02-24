@@ -21,8 +21,16 @@ jobs:
       
       - name: Check for changes
         run: |
-          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration-lambda/" || true)
-          EC2_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration/" || true)
+          echo "Checking for changed files..."
+          CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+      
+          LAMBDA_CHANGED=$(echo "$CHANGED_FILES" | grep "^ai-data-integration-lambda/" || true)
+          EC2_CHANGED=$(echo "$CHANGED_FILES" | grep "^ai-data-integration/" || true)
+      
+          echo "LAMBDA_CHANGED files: $LAMBDA_CHANGED"
+          echo "EC2_CHANGED files: $EC2_CHANGED"
       
           echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
           echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
