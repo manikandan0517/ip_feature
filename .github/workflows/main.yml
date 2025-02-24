@@ -16,14 +16,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Detect Changes
-        id: filter
+      - name: Fetch full git history
+        run: git fetch --unshallow
+      
+      - name: Check for changes
         run: |
           LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration-lambda/" || true)
           EC2_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration/" || true)
-
+      
           echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
           echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
+      
   deploy_lambda:
     needs: check_changes
     if: needs.check_changes.outputs.lambda_changed == 'true'
