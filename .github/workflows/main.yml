@@ -6,32 +6,28 @@ on:
       - main
 
 jobs:
-  detect_changes:
+  check_changes:
     runs-on: ubuntu-latest
     outputs:
-      ai_data_integration_lambda_changed: ${{ steps.check_changes.outputs.ai_data_integration_lambda_changed }}
-      ai_data_integration_changed: ${{ steps.check_changes.outputs.ai_data_integration_changed }}
-      
+      lambda_changed: ${{ steps.filter.outputs.lambda_changed }}
+      ec2_changed: ${{ steps.filter.outputs.ec2_changed }}
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Check for Changes
-        id: check_changes
+      - name: Detect Changes
+        id: filter
         run: |
-          echo "Detecting changes..."
-          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^ai_data_integration_lambda/' || true)
-          DATA_INTEGRATION_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^ai_data_integration/' || true)
+          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai_data_integration_lambda/" || true)
+          EC2_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai_data_integration/" || true)
 
-          echo "lambda folder changed: $LAMBDA_CHANGED"
-          echo "data integration folder changed: $DATA_INTEGRATION_CHANGED"
+          echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
+          echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
 
-          echo "::set-output name=ai_data_integration_lambda_changed::${LAMBDA_CHANGED}"
-          echo "::set-output name=ai_data_integration_changed::${DATA_INTEGRATION_CHANGED}"
-
-  docker_lambda_cicd:
-    needs: detect_changes
-    if: needs.detect_changes.outputs.ai_data_integration_lambda_changed != ''
+  deploy_lambda:
+    needs: check_changes
+    if: needs.check_changes.outputs.lambda_changed == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -90,40 +86,67 @@ jobs:
           echo "AWS Account ID: $ACCOUNT_ID"
 
           echo "Checking if Lambda function exists..."
-          if aws lambda get-function --function-name $FUNCTION_NAME; then
-            echo "Updating existing Lambda function..."
-            aws lambda update-function-code --function-name $FUNCTION_NAME --image-uri $IMAGE_URI
-          else
-            echo "Creating a new Lambda function..."
-            aws lambda create-function \
-              --function-name $FUNCTION_NAME \
-              --role $AWS_ROLE_ARN \
-              --package-type Image \
-              --code '{"ImageUri":"'"$IMAGE_URI"'"}' \
-              --timeout 900 \
-              --memory-size 1024 \
-              --region $AWS_REGION
+          ATTEMPTS=0
+          MAX_ATTEMPTS=5
+          while [ $ATTEMPTS -lt $MAX_ATTEMPTS ]; do
+            if aws lambda get-function --function-name $FUNCTION_NAME; then
+              echo "Function exists. Updating..."
+              if aws lambda update-function-code --function-name $FUNCTION_NAME --image-uri $IMAGE_URI; then
+                echo "Lambda function updated successfully."
+                break
+              else
+                echo "Update failed, retrying in 5 seconds..."
+                ATTEMPTS=$((ATTEMPTS+1))
+                sleep 5
+              fi
+            else
+              echo "Function does not exist. Creating..."
+              if aws lambda create-function \
+                --function-name $FUNCTION_NAME \
+                --role $AWS_ROLE_ARN \
+                --package-type Image \
+                --code '{"ImageUri":"'"$IMAGE_URI"'"}' \
+                --timeout 900 \
+                --memory-size 1024 \
+                --region $AWS_REGION; then
+                echo "Lambda function created successfully."
+                break
+              else
+                echo "Creation failed, retrying in 5 seconds..."
+                ATTEMPTS=$((ATTEMPTS+1))
+                sleep 5
+              fi
+            fi
+          done
 
-  ec2_deploy:
-    needs: detect_changes
-    if: needs.detect_changes.outputs.ai_data_integration_changed != ''
+          if [ $ATTEMPTS -eq $MAX_ATTEMPTS ]; then
+            echo "Max retries reached. Exiting with failure."
+            exit 1
+          fi
+
+  deploy_ec2:
+    needs: check_changes
+    if: needs.check_changes.outputs.ec2_changed == 'true'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Pull Code on EC2 and Restart Gunicorn
+      - name: Pull Code to EC2 and Restart Gunicorn
         env:
-          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
-          PROJECT_DIR: /home/ubuntu/ai_data_integration
+          EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
-          echo "Connecting to EC2 and updating code..."
-          ssh -o StrictHostKeyChecking=no -i $EC2_SSH_KEY $EC2_USER@$EC2_HOST << 'EOF'
-            cd $PROJECT_DIR
-            git pull origin main
-            echo "Restarting the service with Gunicorn..."
-            sudo systemctl restart gunicorn
-          EOF
+          echo "Pulling latest code to EC2 and restarting Gunicorn..."
+          aws ssm send-command \
+            --instance-ids $EC2_INSTANCE_ID \
+            --region $AWS_REGION \
+            --document-name "AWS-RunShellScript" \
+            --comment "Git pull to correct folder and restart gunicorn" \
+            --parameters commands=[
+              "if [ ! -d /home/ubuntu/ai-data-integration ]; then git clone https://github.com/manikandan0517/ip_feature.git /home/ubuntu/ai-data-integration; fi",
+              "cd /home/ubuntu/ai-data-integration",
+              "git pull origin main",
+              "source /home/ubuntu/ai_data_integration/venv/bin/activate",
+              "pip install -r requirements.txt",
+              "sudo systemctl restart gunicorn"
+            ]
+          echo "Code pulled and Gunicorn restarted successfully on EC2."
