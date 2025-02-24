@@ -18,26 +18,27 @@ jobs:
 
       - name: Fetch full git history
         run: git fetch --unshallow
-      
+
       - name: Check for changes
+        id: filter
         run: |
           echo "Checking for changed files..."
           CHANGED_FILES=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }})
           echo "Changed files:"
           echo "$CHANGED_FILES"
-      
+
           LAMBDA_CHANGED=$(echo "$CHANGED_FILES" | grep "^ai-data-integration-lambda/" || true)
           EC2_CHANGED=$(echo "$CHANGED_FILES" | grep "^ai-data-integration/" || true)
-      
+
           echo "LAMBDA_CHANGED files: $LAMBDA_CHANGED"
           echo "EC2_CHANGED files: $EC2_CHANGED"
-      
-          echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
-          echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
-      
+
+          echo "lambda_changed=${LAMBDA_CHANGED:+true}" | tr -d '[:space:]' >> $GITHUB_OUTPUT
+          echo "ec2_changed=${EC2_CHANGED:+true}" | tr -d '[:space:]' >> $GITHUB_OUTPUT
+
   deploy_lambda:
     needs: check_changes
-    if: needs.check_changes.outputs.lambda_changed == 'true'
+    if: needs.check_changes.outputs.lambda_changed != ''
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -136,10 +137,14 @@ jobs:
 
   deploy_ec2:
     needs: check_changes
-    if: needs.check_changes.outputs.ec2_changed == 'true'
+    if: needs.check_changes.outputs.ec2_changed != ''
     runs-on: ubuntu-latest
 
     steps:
+      - name: Debug EC2 Changed Output
+        run: |
+          echo "EC2_CHANGED Output: '${{ needs.check_changes.outputs.ec2_changed }}'"
+
       - name: Pull Code to EC2 and Restart Gunicorn
         env:
           EC2_INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
@@ -150,13 +155,11 @@ jobs:
             --instance-ids $EC2_INSTANCE_ID \
             --region $AWS_REGION \
             --document-name "AWS-RunShellScript" \
-            --comment "Git pull to correct folder and restart gunicorn" \
-            --parameters commands=[
-              "if [ ! -d /home/ubuntu/ai-data-integration ]; then git clone https://github.com/manikandan0517/ip_feature.git /home/ubuntu/ai-data-integration; fi",
-              "cd /home/ubuntu/ai-data-integration",
-              "git pull origin main",
-              "source /home/ubuntu/ai_data_integration/venv/bin/activate",
-              "pip install -r requirements.txt",
-              "sudo systemctl restart gunicorn"
-            ]
+            --comment "Git pull to correct folder and restart Gunicorn" \
+            --parameters commands=["if [ ! -d /home/ubuntu/ai-data-integration ]; then git clone https://github.com/manikandan0517/ip_feature.git /home/ubuntu/ai-data-integration; fi && \
+            cd /home/ubuntu/ai-data-integration && \
+            git pull origin main && \
+            source /home/ubuntu/ai_data_integration/venv/bin/activate && \
+            pip install -r requirements.txt && \
+            sudo systemctl restart gunicorn"]
           echo "Code pulled and Gunicorn restarted successfully on EC2."
