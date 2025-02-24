@@ -1,0 +1,11 @@
+boto3 
+psycopg2-binary
+python-dotenv 
+pandas
+openai
+boto3
+pymupdf==1.24.13
+instructor
+pydantic
+datadog
+datadog-api-client

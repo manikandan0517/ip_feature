@@ -1,0 +1,129 @@
+name: inspect_point_ai_dataintegration
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  detect_changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ai_data_integration_lambda_changed: ${{ steps.check_changes.outputs.ai_data_integration_lambda_changed }}
+      ai_data_integration_changed: ${{ steps.check_changes.outputs.ai_data_integration_changed }}
+      
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Check for Changes
+        id: check_changes
+        run: |
+          echo "Detecting changes..."
+          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^ai_data_integration_lambda/' || true)
+          DATA_INTEGRATION_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^ai_data_integration/' || true)
+
+          echo "lambda folder changed: $LAMBDA_CHANGED"
+          echo "data integration folder changed: $DATA_INTEGRATION_CHANGED"
+
+          echo "::set-output name=ai_data_integration_lambda_changed::${LAMBDA_CHANGED}"
+          echo "::set-output name=ai_data_integration_changed::${DATA_INTEGRATION_CHANGED}"
+
+  docker_lambda_cicd:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ai_data_integration_lambda_changed != ''
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-session-name: GitHubActionsSession
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Delete Existing ECR Images
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY_NAME }}
+        run: |
+          echo "Deleting all existing ECR images..."
+          IMAGE_IDS=$(aws ecr list-images --repository-name $REPOSITORY --query 'imageIds[*]' --output json)
+          if [ "$IMAGE_IDS" != "[]" ]; then
+            aws ecr batch-delete-image --repository-name $REPOSITORY --image-ids "$IMAGE_IDS"
+            echo "All existing images deleted."
+          else
+            echo "No images to delete."
+          fi
+
+      - name: Build, Tag, and Push Docker Image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Building Docker image..."
+          docker build -f ./ai_data_integration_lambda/Dockerfile -t $REGISTRY/$REPOSITORY:$IMAGE_TAG ./ai_data_integration_lambda && \
+          echo "Pushing Docker image to Amazon ECR..."
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          echo "Docker image push completed successfully!"
+
+      - name: Deploy Lambda Function
+        env:
+          FUNCTION_NAME: inspectpoint-ai-data-integration-lambda
+          IMAGE_URI: ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY_NAME }}:${{ github.sha }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          echo "Retrieving AWS Account ID..."
+          ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+          echo "AWS Account ID: $ACCOUNT_ID"
+
+          echo "Checking if Lambda function exists..."
+          if aws lambda get-function --function-name $FUNCTION_NAME; then
+            echo "Updating existing Lambda function..."
+            aws lambda update-function-code --function-name $FUNCTION_NAME --image-uri $IMAGE_URI
+          else
+            echo "Creating a new Lambda function..."
+            aws lambda create-function \
+              --function-name $FUNCTION_NAME \
+              --role $AWS_ROLE_ARN \
+              --package-type Image \
+              --code '{"ImageUri":"'"$IMAGE_URI"'"}' \
+              --timeout 900 \
+              --memory-size 1024 \
+              --region $AWS_REGION
+
+  ec2_deploy:
+    needs: detect_changes
+    if: needs.detect_changes.outputs.ai_data_integration_changed != ''
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Pull Code on EC2 and Restart Gunicorn
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          PROJECT_DIR: /home/ubuntu/ai_data_integration
+        run: |
+          echo "Connecting to EC2 and updating code..."
+          ssh -o StrictHostKeyChecking=no -i $EC2_SSH_KEY $EC2_USER@$EC2_HOST << 'EOF'
+            cd $PROJECT_DIR
+            git pull origin main
+            echo "Restarting the service with Gunicorn..."
+            sudo systemctl restart gunicorn
+          EOF
