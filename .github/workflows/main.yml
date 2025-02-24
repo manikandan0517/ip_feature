@@ -19,8 +19,8 @@ jobs:
       - name: Detect Changes
         id: filter
         run: |
-          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai_data_integration_lambda/" || true)
-          EC2_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai_data_integration/" || true)
+          LAMBDA_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration-lambda/" || true)
+          EC2_CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep "^ai-data-integration/" || true)
 
           echo "lambda_changed=${LAMBDA_CHANGED:+true}" >> $GITHUB_OUTPUT
           echo "ec2_changed=${EC2_CHANGED:+true}" >> $GITHUB_OUTPUT
